@@ -1,0 +1,4 @@
+/.gcloudignore
+/.vscode
+/node_modules
+/test
