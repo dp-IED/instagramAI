@@ -1,4 +1,6 @@
 /.gcloudignore
 /.vscode
-/node_modules
-/test
+/OpenAI.txt
+
+test/secrets.txt
+test/instagram_session.json

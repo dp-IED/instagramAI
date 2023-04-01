@@ -1,3 +1,5 @@
+from datetime import time
+import random
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
@@ -10,8 +12,15 @@ import spacy
 import heapq
 from collections import Counter
 import openai
+from flask import Flask, request
 from flask import escape
 
+# create a Flask instance
+
+app = Flask(__name__)
+
+
+@app.route('/summarize', methods=['POST'])
 def summarize(request):
     nlp = spacy.load('en_core_web_sm')
     text = escape(request.json['text'])
@@ -42,11 +51,14 @@ def summarize(request):
     return ' '.join(summary)
 
 
+@app.route('/completion', methods=['POST'])
 def completion(request):
+    api_key = ""
+    with open("OpenAI.txt", "r") as f:
+        api_key = f.read()
+        f.close()
 
-    openai.api_key = "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"
-
-    if request.json is not None:
+    if request.json is not None and api_key != "":
         name = request.json['name']
         age = request.json['age']
         position = request.json['position']
@@ -68,20 +80,23 @@ def completion(request):
         return completion
 
 
-def get_dms(api):
+def get_dms(api, db, uid):
     dms = api.direct_v2_inbox()['inbox']['threads']
+    print("Getting DMs 📩")
     new_dms = []
-
     for dm in dms:
+        print(dm)
         if dm['has_newer']:
+            print("New DMs found 📩")
             new_dms.append(dm)
+    if new_dms:
+        db.collection(u'users').document(uid).set({"dms": new_dms}, merge=True)
 
-    return new_dms
 
+@app.route('/login', methods=['POST'])
+def login():
 
-def instagram_dms(request):
-
-    request_json = request.get_json()
+    request_json = request.form
 
     if not request_json or 'username' not in request_json or 'password' not in request_json:
         return jsonify({'error': 'Missing credentials'}), 400
@@ -91,29 +106,46 @@ def instagram_dms(request):
     uid = request_json['uid']
 
     cred = credentials.ApplicationDefault()
-    firebase_admin.initialize_app(cred)
+    try:
+        firebase_admin.initialize_app(cred)
+    except ValueError:
+        pass
+
     db = firestore.client()
 
     # backup the current settings for future use
 
-    def onlogin_callback(api, db, uid):
+    def saveCreds(api, db, uid):
         settings = api.settings
         db.collection(u'users').document(uid).set({
-            cookie: settings
-        })
+            "cookie": settings
+        }, merge=True)
+
+    def session(api, db, uid):
+        # Start session
+        start = time.time()
+        length_of_session_in_MS = request_json["time"]
+        while start + length_of_session_in_MS > time.time():
+            random_time = random.randint(60, 120)
+            get_dms(api, db, uid)
+            time.sleep(random_time)
 
     try:
         # 1. Try to get the user's cookie from the database.
         cookie = db.collection(u'users').document(
             uid).get().to_dict()['cookie']
-
+    except KeyError:
+        cookie = None
     # 2. If the cookie is not None, then try to use it to login.
         if cookie is not None:
             device_id = cookie.get('device_id')
             try:
-                api = Client(username, password, settings=cookie)
-        # Get DMs
-                new_dms = get_dms(api)
+
+                api = Client(username, password, settings=cookie,
+                             device_id=device_id)
+                status = "Logged in to Instagram 📲"
+                session(api, db, uid)
+                return "listening for new dms", 200
 
     # 3. If the cookie has expired, then use the on_login callback to update the cookie in the database.
             except (ClientCookieExpiredError, ClientLoginRequiredError) as e:
@@ -121,13 +153,17 @@ def instagram_dms(request):
                     'ClientCookieExpiredError/ClientLoginRequiredError: {0!s}'.format(e))
 
     # 4. If the cookie is None, then login with the user's credentials.
-                api = Client(
-                    username, password,
-                    device_id=device_id,
-                    on_login=lambda x: onlogin_callback(x, db, uid))
-                new_dms = get_dms(api)
-
-        return jsonify({'dms': new_dms})
+        else:
+            api = Client(
+                username, password,
+                on_login=lambda x: saveCreds(x, db, uid))
+            session(api, db, uid)
+            print("Listening Ended... Please refresh the page to start again 📲")
+        return "listening for new dms", 200
     except ClientError as e:
         # 5. If the login fails, then return a 400 error.
         return jsonify({'error': f'Login failed: {e}'}), 400
+
+
+if __name__ == '__main__':
+    app.run(port="8080", debug=True)
