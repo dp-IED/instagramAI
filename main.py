@@ -19,11 +19,15 @@ from flask import escape
 
 app = Flask(__name__)
 
+with open("OpenAI.txt", "r") as f:
+    openai.api_key = f.read()
+    f.close()
+
 
 @app.route('/summarize', methods=['POST'])
-def summarize(request):
+def summarize():
     nlp = spacy.load('en_core_web_sm')
-    text = escape(request.json['text'])
+    text = str(escape(request.json['text']))
     num_sentences = 3
     # Tokenize the text and remove stop words
     doc = nlp(text.lower())
@@ -52,13 +56,8 @@ def summarize(request):
 
 
 @app.route('/completion', methods=['POST'])
-def completion(request):
-    api_key = ""
-    with open("OpenAI.txt", "r") as f:
-        api_key = f.read()
-        f.close()
-
-    if request.json is not None and api_key != "":
+def completion():
+    if request.json is not None:
         name = request.json['name']
         age = request.json['age']
         position = request.json['position']
@@ -166,4 +165,4 @@ def login():
 
 
 if __name__ == '__main__':
-    app.run(port="8080", debug=True)
+    app.run(port=1234)
