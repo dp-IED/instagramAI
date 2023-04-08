@@ -1,50 +1,78 @@
 import time
-import requests
-from flask import escape, request
+from flask import Flask, escape, request
 from session import Session
-from celery import Celery
+
+flask_app = Flask(__name__)
 
 
-app = Celery('myapp', broker='redis://localhost:6379/0',
-             backend='redis://localhost:6379/0')
+def start_session(uid, duration, user_info, blacklist):
 
+    session = Session(uid, duration, user_info, blacklist)
 
-@app.task
-def start_session(uid, duration, user_info):
-    session = Session(uid, duration, user_info)
-
-    while session.start_time + session.duration > time.time():
-
+    while session.start_time + int(session.duration) > time.time():
+        session.db.collection("users").document(
+            session.uid).set({"active": True, }, merge=True)
         for i in session.client.direct_threads(selected_filter="unread"):
+
             context, last_message = session.filterThreads(i)
-            summary = session.getSummary(context)
-            if summary[0] is None:
-                print("{} Error: failed to get summary".format(summary[1]))
-            elif summary[0] is not None:
-                completion = session.getCompletion(summary[0], last_message)
-                if completion is None:
-                    print("{} Error: failed to get completion".format(
-                        completion[1]))
-                elif completion[0] is not None:
-                    session.send_message(last_message.user_id, completion[0])
-                    # add entry to database of messages sent that day
-                    session.db.collection("uid").document(session.start_time).set({
-                        summary[0]: completion[0],
-                    }, merge=True)
+
+            if context is None or last_message is None:
+                continue
+
+            # summary = session.getSummary(context)
+            summary = context
+
+            if summary is None:
+                print("{} Error: failed to get summary".format(summary))
+
+            print("Getting completion...")
+            print("Last message: ", last_message.text)
+            completion = session.getCompletion(
+                summary, last_message.text, i.thread_title)
+
+            if completion is None:
+                print("{} Error: failed to get completion".format(
+                    completion))
+
+            print(
+                f"Do you want to send: {completion} to {i.thread_title} ? The last message was: {last_message.text}\n\n[1] Yes\n[2] No\n[3] Exit\n")
+            choice = int(input())
+            if choice == 1:
+                session.send_message(
+                    i, completion)
+                print("Message sent")
+            elif choice == 2:
+                print("Message not sent")
+                pass
+            elif choice == 3:
+                print("Exiting...")
+                exit()
+            else:
+                print("Invalid choice")
+                pass
+            # add entry to database of messages sent that day
+            session.db.collection("users").document(session.uid).collection("messages").document().set({
+                "message": completion,
+                "thread": i.thread_title,
+                "time": time.time(),
+            }, merge=True)
 
     summary = session.end_of_session()
+    if summary is None:
+        return "Error: failed to get summary: check if username has been set in db"
     # save summary to session_ended entry in uid document, triggers event listener on client side
     session.db.collection("uid").document("session_ended").set({
         session.start_time: summary,
     }, merge=True)
-    return session
 
 
-@app.route('/start-session')
+@ flask_app.route('/start-session', methods=['POST'])
 def run_my_task():
-    uid = request.args.get('uid')
-    duration = request.args.get('duration')
-    user_info = request.args.get('user_info')
+    uid = request.json['uid']
+    duration = request.json['duration']
+    user_info = request.json['user_info']
+    blacklist = request.json['blacklist']
+    print(uid, duration, user_info, blacklist)
     if uid is None:
         return "Error: uid is required"
     if duration is None:
@@ -52,8 +80,9 @@ def run_my_task():
     if user_info is None:
         return "Error: user_info is required"
 
-    try:
-        result = start_session.delay(uid, duration, user_info)
-        return "Session started ✅"
-    except:
-        return "Error: failed to start session"
+    result = start_session(uid, duration, user_info, blacklist)
+    return "Session started"
+
+
+if __name__ == "__main__":
+    flask_app.run(debug=True)
