@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import backoff
@@ -11,29 +12,31 @@ import requests
 from functions import completion, end_of_session_summary, summarize
 
 
-class Session:
+class InstagramSession:
 
     start_time = time.time()
 
     exceptions = {
         # email/SMS verification due to suspicious activity
         "challenge": ChallengeUnknownStep,
-        "login_required": [ClientError],
+        "clientError": ClientError,
+        # refresh needed
+        "loginRequired": LoginRequired,
     }
 
-    def __init__(self, uid, duration: int, userInfo: dict, blacklist: list):
-
-        cred = credentials.ApplicationDefault()
+    def __init__(self, uid, duration: int, blacklist: list, auto: bool):
 
         try:
+            cred = credentials.Certificate(
+                "/Users/darenpalmer/Desktop/Dev/instagramAI/firebase-key.json")
             firebase_admin.initialize_app(cred)
         except ValueError:
             pass
 
         self.uid = uid
         self.duration = duration
-        self.userInfo = userInfo  # only used for completion
         self.blacklist = blacklist
+        self.auto = auto
         self.db = firestore.client()
 
         self.username, self.password = self.get_credentials()
@@ -46,6 +49,9 @@ class Session:
 
         if self.client.user_id is not None:
             print("Logged in ✨")
+            self.db.collection(u'users').document(self.uid).set({
+                "cookie": self.client.cookie_dict
+            }, merge=True)
         else:
             print("Renewing session...")
             self.client = self.login(self, refresh=True)
@@ -88,13 +94,14 @@ class Session:
             client = Client()
 
             with open("temp.json", "w") as f:
-                f.write(cookie)
+                o = json.dumps(cookie)
+                print(o)
+                f.write(o)
                 f.close()
 
             temp = client.load_settings("temp.json")
             # delete temp.json
             os.remove("temp.json")
-            print(temp["authorization_data"]["sessionid"])
             client.login_by_sessionid(
                 sessionid=temp["authorization_data"]["sessionid"])
             print("Logged in using cookie 🍪")
@@ -102,31 +109,6 @@ class Session:
         else:
             print("No cookie found, logging in...")
             return self.login(refresh=True)
-
-    def filterThreads(self, thread: DirectThread):
-        last_message = thread.messages[0]
-
-        # check if threads.users is in blacklist
-        def blacklistFilter():
-            self.blacklist
-            for user in thread.users:
-                if user.username in self.blacklist:
-                    return False
-            return True
-
-        if last_message is None:
-            return None, None
-
-        # if there is text content to the last message, get the context
-
-        if last_message.item_type == "text" and blacklistFilter():
-            messages = thread.messages
-            messages.reverse()
-            print("Starting to get context from {}".format(thread.thread_title))
-            return self.buildContext(thread), last_message
-        else:
-            print("The last message has not text, skipping...")
-            return None, None
 
     def buildContext(self, thread: DirectThread):
         context = ""
@@ -138,8 +120,6 @@ class Session:
         for i in thread.users:
             i: UserShort = i
             participants[i.pk] = i.username
-
-        print(participants)
 
         if thread is None:
             return "No unread messages"
@@ -167,40 +147,6 @@ class Session:
                 progress += 1/len(thread.messages)
                 pass
         return context
-
-    def getSummary(self, context):
-        summary = summarize(self.username, context)[0]["summary_text"]
-        return summary
-
-    def getCompletion(self, summary, last_message, friend):
-
-        # get completion from server
-
-        name = self.userInfo.get("name")
-        age = self.userInfo.get("age")
-        position = self.userInfo.get("position")
-        company = self.userInfo.get("company")
-        location = self.userInfo.get("location")
-        context = summary
-
-        if name is None:
-            return "No name provided"
-        if age is None:
-            return "No age provided"
-        if position is None:
-            return "No position provided"
-        if company is None:
-            return "No company provided"
-        if location is None:
-            return "No location provided"
-        if friend is None:
-            return "No username provided"
-        if context is None:
-            return "No context provided"
-        if last_message is None:
-            return "No last message provided"
-
-        return completion(name, age, position, company, location, friend, context, last_message)
 
     def send_message(self, receiver: DirectThread, content: str):
         try:

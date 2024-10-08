@@ -4,3 +4,8 @@
 
 test/secrets.txt
 test/instagram_session.json
+firebase-key.json
+messages/
+.DS_Store
+queueFinetuning.py
+creds.json
